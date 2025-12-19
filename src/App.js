@@ -857,6 +857,14 @@ export default function App() {
 
   // 1. Initialize Firebase Connection
   useEffect(() => {
+    // Auto-inject TailwindCSS for styling if missing (Standard for single-file demos)
+    if (!document.getElementById("tailwind-script")) {
+      const script = document.createElement("script");
+      script.id = "tailwind-script";
+      script.src = "https://cdn.tailwindcss.com";
+      document.head.appendChild(script);
+    }
+
     // Basic auth check listener
     const initAuth = async () => {
       try {
