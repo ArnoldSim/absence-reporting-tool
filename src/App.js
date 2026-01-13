@@ -111,21 +111,57 @@ const Login = ({ onLogin }) => {
           const q = query(collection(db, "staff_list"), orderBy("name"));
           const snapshot = await getDocs(q);
 
+          let userList = [];
+
           if (snapshot.empty) {
+            // Create Initial Admin if DB is empty
             const newAdmin = {
               name: ADMIN_NAME,
               role: "admin",
               team: "Others",
-              pin: "1234",
+              pin: DEFAULT_PIN,
               createdAt: serverTimestamp(),
             };
-            await addDoc(collection(db, "staff_list"), newAdmin);
-            setUsers([newAdmin]);
+            const docRef = await addDoc(collection(db, "staff_list"), newAdmin);
+            userList = [{ ...newAdmin, id: docRef.id }];
           } else {
-            setUsers(
-              snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
-            );
+            // Map existing users
+            userList = snapshot.docs.map((doc) => ({
+              id: doc.id,
+              ...doc.data(),
+            }));
+
+            // --- SELF-HEALING PROTOCOL ---
+            // Check if Admin exists but has missing PIN (Legacy Data Fix)
+            const adminUser = userList.find((u) => u.name === ADMIN_NAME);
+            if (adminUser && !adminUser.pin) {
+              console.log("Healing Admin User: Adding missing PIN");
+              await setDoc(
+                doc(db, "staff_list", adminUser.id),
+                { pin: DEFAULT_PIN },
+                { merge: true }
+              );
+              adminUser.pin = DEFAULT_PIN; // Update local state immediately
+            }
+
+            // If Admin somehow totally missing in a populated list (rare), re-add
+            if (!adminUser && userList.length > 0) {
+              const newAdmin = {
+                name: ADMIN_NAME,
+                role: "admin",
+                team: "Others",
+                pin: DEFAULT_PIN,
+                createdAt: serverTimestamp(),
+              };
+              const docRef = await addDoc(
+                collection(db, "staff_list"),
+                newAdmin
+              );
+              userList.push({ ...newAdmin, id: docRef.id });
+            }
           }
+
+          setUsers(userList);
         } catch (err) {
           console.error("Fetch Error", err);
           setError("Could not load staff list. Check connection.");
