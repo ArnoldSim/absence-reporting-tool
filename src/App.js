@@ -15,6 +15,7 @@ import {
   serverTimestamp,
   getDocs,
   deleteDoc,
+  updateDoc,
 } from "firebase/firestore";
 import {
   Activity,
@@ -37,6 +38,7 @@ import {
   Blocks,
   KeyRound,
   Shield,
+  UserCog,
 } from "lucide-react";
 
 // --- PRODUCTION CONFIGURATION ---
@@ -62,8 +64,6 @@ const ADMIN_NAME = "Arnold Sim";
 const DEFAULT_PIN = "1234";
 
 // --- SECURITY CONFIGURATION ---
-// Ideally, share this code with your team during onboarding.
-// It acts as the "Front Door Key" to hide staff names from the public.
 const ORG_ACCESS_CODE = "CSE2025";
 
 const TEAMS = [
@@ -79,9 +79,8 @@ const TEAMS = [
 
 // --- COMPONENTS ---
 
-// 1. Login Component (Gatekeeper + Roll Call)
+// 1. Login Component
 const Login = ({ onLogin }) => {
-  // State 0: Gatekeeper, 1: Team, 2: Name, 3: PIN
   const [step, setStep] = useState(0);
   const [orgCodeInput, setOrgCodeInput] = useState("");
 
@@ -93,15 +92,13 @@ const Login = ({ onLogin }) => {
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
 
-  // Check for saved Access Code on mount
   useEffect(() => {
     const savedCode = localStorage.getItem("cse_access_code");
     if (savedCode === ORG_ACCESS_CODE) {
-      setStep(1); // Skip gatekeeper if recognized
+      setStep(1);
     }
   }, []);
 
-  // Fetch users only after passing the gatekeeper (Optimization + Security)
   useEffect(() => {
     if (step >= 1) {
       const fetchUsers = async () => {
@@ -111,57 +108,21 @@ const Login = ({ onLogin }) => {
           const q = query(collection(db, "staff_list"), orderBy("name"));
           const snapshot = await getDocs(q);
 
-          let userList = [];
-
           if (snapshot.empty) {
-            // Create Initial Admin if DB is empty
             const newAdmin = {
               name: ADMIN_NAME,
               role: "admin",
               team: "Others",
-              pin: DEFAULT_PIN,
+              pin: "1234",
               createdAt: serverTimestamp(),
             };
-            const docRef = await addDoc(collection(db, "staff_list"), newAdmin);
-            userList = [{ ...newAdmin, id: docRef.id }];
+            await addDoc(collection(db, "staff_list"), newAdmin);
+            setUsers([newAdmin]);
           } else {
-            // Map existing users
-            userList = snapshot.docs.map((doc) => ({
-              id: doc.id,
-              ...doc.data(),
-            }));
-
-            // --- SELF-HEALING PROTOCOL ---
-            // Check if Admin exists but has missing PIN (Legacy Data Fix)
-            const adminUser = userList.find((u) => u.name === ADMIN_NAME);
-            if (adminUser && !adminUser.pin) {
-              console.log("Healing Admin User: Adding missing PIN");
-              await setDoc(
-                doc(db, "staff_list", adminUser.id),
-                { pin: DEFAULT_PIN },
-                { merge: true }
-              );
-              adminUser.pin = DEFAULT_PIN; // Update local state immediately
-            }
-
-            // If Admin somehow totally missing in a populated list (rare), re-add
-            if (!adminUser && userList.length > 0) {
-              const newAdmin = {
-                name: ADMIN_NAME,
-                role: "admin",
-                team: "Others",
-                pin: DEFAULT_PIN,
-                createdAt: serverTimestamp(),
-              };
-              const docRef = await addDoc(
-                collection(db, "staff_list"),
-                newAdmin
-              );
-              userList.push({ ...newAdmin, id: docRef.id });
-            }
+            setUsers(
+              snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+            );
           }
-
-          setUsers(userList);
         } catch (err) {
           console.error("Fetch Error", err);
           setError("Could not load staff list. Check connection.");
@@ -175,13 +136,12 @@ const Login = ({ onLogin }) => {
     }
   }, [step]);
 
-  // Handle Organization Code Entry
   const handleOrgCodeSubmit = (e) => {
     e.preventDefault();
     if (orgCodeInput.trim().toUpperCase() === ORG_ACCESS_CODE.toUpperCase()) {
-      localStorage.setItem("cse_access_code", ORG_ACCESS_CODE); // Save cookie
+      localStorage.setItem("cse_access_code", ORG_ACCESS_CODE);
       setStep(1);
-      setLoading(true); // Show loading while fetching users
+      setLoading(true);
     } else {
       setError("Invalid Organization Code.");
     }
@@ -202,7 +162,6 @@ const Login = ({ onLogin }) => {
   const handlePinSubmit = (e) => {
     e.preventDefault();
     setLoading(true);
-    // Simple PIN check (In a real app with high security, verify against DB again)
     if (selectedUser.pin === inputPin) {
       onLogin(selectedUser);
     } else {
@@ -214,7 +173,6 @@ const Login = ({ onLogin }) => {
   const handleBack = () => {
     if (step === 3) setStep(2);
     else if (step === 2) setStep(1);
-    // We don't go back to step 0 usually, unless they clear cache
     setError("");
     setInputPin("");
   };
@@ -224,7 +182,6 @@ const Login = ({ onLogin }) => {
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
       <div className="bg-white p-8 rounded-lg shadow-xl w-full max-w-md border-t-4 border-red-600 relative overflow-hidden">
-        {/* LEGO Strip */}
         <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-red-600 via-yellow-400 via-green-600 to-blue-600"></div>
 
         <div className="text-center mb-6 mt-2">
@@ -258,7 +215,6 @@ const Login = ({ onLogin }) => {
 
         {!loading && (
           <div className="space-y-4">
-            {/* STEP 0: GATEKEEPER */}
             {step === 0 && (
               <form
                 onSubmit={handleOrgCodeSubmit}
@@ -286,7 +242,6 @@ const Login = ({ onLogin }) => {
               </form>
             )}
 
-            {/* STEP 1: SELECT TEAM */}
             {step === 1 && (
               <div className="animate-in fade-in slide-in-from-right-4 duration-300">
                 <p className="text-center text-slate-600 mb-4 font-medium">
@@ -306,7 +261,6 @@ const Login = ({ onLogin }) => {
               </div>
             )}
 
-            {/* STEP 2: SELECT NAME */}
             {step === 2 && (
               <div className="animate-in fade-in slide-in-from-right-4 duration-300">
                 <p className="text-center text-slate-600 mb-4 font-medium">
@@ -333,7 +287,6 @@ const Login = ({ onLogin }) => {
               </div>
             )}
 
-            {/* STEP 3: ENTER PIN */}
             {step === 3 && (
               <form
                 onSubmit={handlePinSubmit}
@@ -371,10 +324,12 @@ const Login = ({ onLogin }) => {
                     />
                     <KeyRound className="absolute right-4 top-4 w-5 h-5 text-slate-300" />
                   </div>
-                  {/* NOTE: Remove this default hint in final version if desired */}
-                  <p className="text-xs text-center text-slate-400 mt-2">
-                    Default PIN is 1234
-                  </p>
+                  {/* Subtle hint only if using default */}
+                  {selectedUser.pin === DEFAULT_PIN && (
+                    <p className="text-xs text-center text-amber-600 mt-2">
+                      Initial PIN: {DEFAULT_PIN}
+                    </p>
+                  )}
                 </div>
 
                 <button
@@ -386,7 +341,6 @@ const Login = ({ onLogin }) => {
               </form>
             )}
 
-            {/* BACK BUTTON */}
             {step > 1 && (
               <button
                 onClick={handleBack}
@@ -416,7 +370,7 @@ const AbsenceForm = ({ user }) => {
 
     try {
       await addDoc(collection(db, "absences"), {
-        userId: user.id, // Link by ID
+        userId: user.id,
         userName: user.name,
         userTeam: user.team || "Others",
         type: leaveType,
@@ -449,6 +403,15 @@ const AbsenceForm = ({ user }) => {
           </p>
         </div>
       </div>
+
+      {user.pin === DEFAULT_PIN && (
+        <div className="bg-red-50 border border-red-100 p-3 rounded-lg flex items-center text-sm text-red-800">
+          <AlertCircle className="w-4 h-4 mr-2" />
+          <span>
+            You are using the default PIN. Please update it in "My Profile".
+          </span>
+        </div>
+      )}
 
       <div className="bg-white rounded-lg shadow-md p-6 border border-slate-200">
         <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
@@ -522,7 +485,149 @@ const AbsenceForm = ({ user }) => {
   );
 };
 
-// 3. Team Dashboard
+// 3. User Profile (Change PIN)
+const UserProfile = ({ user, onUserUpdate }) => {
+  const [currentPin, setCurrentPin] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [confirmPin, setConfirmPin] = useState("");
+  const [msg, setMsg] = useState({ text: "", type: "" });
+  const [loading, setLoading] = useState(false);
+
+  const handleChangePin = async (e) => {
+    e.preventDefault();
+    setMsg({ text: "", type: "" });
+
+    if (currentPin !== user.pin) {
+      setMsg({ text: "Current PIN is incorrect.", type: "error" });
+      return;
+    }
+    if (newPin.length !== 4) {
+      setMsg({ text: "New PIN must be 4 digits.", type: "error" });
+      return;
+    }
+    if (newPin !== confirmPin) {
+      setMsg({ text: "New PINs do not match.", type: "error" });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await updateDoc(doc(db, "staff_list", user.id), { pin: newPin });
+      // Update local user state immediately
+      onUserUpdate({ ...user, pin: newPin });
+
+      setMsg({ text: "PIN updated successfully!", type: "success" });
+      setCurrentPin("");
+      setNewPin("");
+      setConfirmPin("");
+    } catch (err) {
+      setMsg({ text: "Failed to update PIN.", type: "error" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-xl mx-auto">
+      <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden">
+        <div className="p-4 border-b border-slate-100 bg-slate-50 flex items-center">
+          <UserCog className="w-5 h-5 mr-2 text-slate-600" />
+          <h3 className="font-semibold text-slate-800">My Profile Settings</h3>
+        </div>
+
+        <div className="p-6 space-y-6">
+          <div className="flex items-center space-x-4 pb-6 border-b border-slate-100">
+            <div className="w-16 h-16 bg-slate-100 rounded-full flex items-center justify-center">
+              <User className="w-8 h-8 text-slate-400" />
+            </div>
+            <div>
+              <h4 className="text-lg font-bold text-slate-800">{user.name}</h4>
+              <p className="text-sm text-slate-500">
+                {user.team} •{" "}
+                {user.role === "admin"
+                  ? "Super Admin"
+                  : user.role === "leader"
+                  ? "Team Leader"
+                  : "Staff Member"}
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleChangePin} className="space-y-4">
+            <h5 className="font-medium text-slate-700">Change Access PIN</h5>
+
+            {msg.text && (
+              <div
+                className={`p-3 rounded text-sm ${
+                  msg.type === "success"
+                    ? "bg-green-50 text-green-700"
+                    : "bg-red-50 text-red-700"
+                }`}
+              >
+                {msg.text}
+              </div>
+            )}
+
+            <div>
+              <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
+                Current PIN
+              </label>
+              <input
+                type="password"
+                inputMode="numeric"
+                maxLength={4}
+                className="w-full p-2 border rounded"
+                value={currentPin}
+                onChange={(e) => setCurrentPin(e.target.value)}
+                required
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
+                  New PIN
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  className="w-full p-2 border rounded"
+                  value={newPin}
+                  onChange={(e) => setNewPin(e.target.value)}
+                  required
+                />
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-500 uppercase mb-1">
+                  Confirm New PIN
+                </label>
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  maxLength={4}
+                  className="w-full p-2 border rounded"
+                  value={confirmPin}
+                  onChange={(e) => setConfirmPin(e.target.value)}
+                  required
+                />
+              </div>
+            </div>
+
+            <button
+              disabled={loading}
+              className="bg-slate-800 text-white px-4 py-2 rounded hover:bg-slate-700 transition text-sm font-medium w-full md:w-auto"
+            >
+              {loading ? "Updating..." : "Update PIN"}
+            </button>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ... (TeamDashboard, ManageUsers, MyHistory components remain the same as previous, just ensure imports match)
 const TeamDashboard = () => {
   const [absences, setAbsences] = useState([]);
   const [dateFilter, setDateFilter] = useState("today");
@@ -538,7 +643,6 @@ const TeamDashboard = () => {
       if (dateFilter === "today") {
         data = data.filter((item) => item.date === today);
       }
-
       if (teamFilter !== "All") {
         data = data.filter((item) => item.userTeam === teamFilter);
       }
@@ -687,10 +791,8 @@ const TeamDashboard = () => {
   );
 };
 
-// 4. Manage Users (No Email, Name + PIN)
 const ManageUsers = () => {
   const [users, setUsers] = useState([]);
-
   const [newName, setNewName] = useState("");
   const [newRole, setNewRole] = useState("staff");
   const [newTeam, setNewTeam] = useState(TEAMS[0]);
@@ -713,7 +815,7 @@ const ManageUsers = () => {
         name: newName,
         role: newRole,
         team: newTeam,
-        pin: DEFAULT_PIN, // Default PIN
+        pin: DEFAULT_PIN,
         createdAt: serverTimestamp(),
       });
       setCreateStatus(`User added with PIN: ${DEFAULT_PIN}`);
@@ -871,12 +973,10 @@ const ManageUsers = () => {
   );
 };
 
-// 5. My History List
 const MyHistory = ({ user }) => {
   const [history, setHistory] = useState([]);
 
   useEffect(() => {
-    // Filter by userId (Document ID) which is safer than name
     const q = query(collection(db, "absences"), where("userId", "==", user.id));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
@@ -966,7 +1066,6 @@ export default function App() {
   const [view, setView] = useState("register");
 
   useEffect(() => {
-    // Auto-inject TailwindCSS
     if (!document.getElementById("tailwind-script")) {
       const script = document.createElement("script");
       script.id = "tailwind-script";
@@ -992,6 +1091,10 @@ export default function App() {
   const handleLogout = () => {
     setAppUser(null);
     setView("register");
+  };
+
+  const handleUpdateUser = (updatedUser) => {
+    setAppUser(updatedUser);
   };
 
   if (loading)
@@ -1080,6 +1183,16 @@ export default function App() {
           >
             Absence History
           </button>
+          <button
+            onClick={() => setView("profile")}
+            className={`py-4 text-sm font-bold border-b-4 transition whitespace-nowrap ${
+              view === "profile"
+                ? "border-red-600 text-red-600"
+                : "border-transparent text-slate-500 hover:text-slate-800"
+            }`}
+          >
+            My Profile
+          </button>
           {isLeader && (
             <button
               onClick={() => setView("team_dashboard")}
@@ -1110,6 +1223,9 @@ export default function App() {
       <main className="max-w-6xl mx-auto p-4 md:p-6">
         {view === "register" && <AbsenceForm user={appUser} />}
         {view === "my_history" && <MyHistory user={appUser} />}
+        {view === "profile" && (
+          <UserProfile user={appUser} onUserUpdate={handleUpdateUser} />
+        )}
         {view === "team_dashboard" && isLeader && <TeamDashboard />}
         {view === "users" && isAdmin && <ManageUsers />}
       </main>
