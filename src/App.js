@@ -1,12 +1,7 @@
 import React, { useState, useEffect } from "react";
 // Added getApps and getApp to prevent duplicate initialization
 import { initializeApp, getApps, getApp } from "firebase/app";
-import {
-  getAuth,
-  signInAnonymously,
-  signOut,
-  onAuthStateChanged,
-} from "firebase/auth";
+import { getAuth, signInAnonymously, onAuthStateChanged } from "firebase/auth";
 import {
   getFirestore,
   collection,
@@ -40,6 +35,8 @@ import {
   Filter,
   History,
   Blocks,
+  KeyRound,
+  Shield,
 } from "lucide-react";
 
 // --- PRODUCTION CONFIGURATION ---
@@ -56,14 +53,18 @@ const firebaseConfig = {
 };
 
 // Initialize Firebase (Safe Mode)
-// Checks if Firebase is already initialized to prevent "Duplicate App" errors
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 const auth = getAuth(app);
 const db = getFirestore(app);
 
 // --- APP CONSTANTS ---
-// This is the hardcoded email that triggers the first Admin setup
-const ADMIN_EMAIL = "arnold.sim@lego.com";
+const ADMIN_NAME = "Arnold Sim";
+const DEFAULT_PIN = "1234";
+
+// --- SECURITY CONFIGURATION ---
+// Ideally, share this code with your team during onboarding.
+// It acts as the "Front Door Key" to hide staff names from the public.
+const ORG_ACCESS_CODE = "CSE2025";
 
 const TEAMS = [
   "Bricktastic",
@@ -78,83 +79,111 @@ const TEAMS = [
 
 // --- COMPONENTS ---
 
-// 1. Login Component
+// 1. Login Component (Gatekeeper + Roll Call)
 const Login = ({ onLogin }) => {
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
+  // State 0: Gatekeeper, 1: Team, 2: Name, 3: PIN
+  const [step, setStep] = useState(0);
+  const [orgCodeInput, setOrgCodeInput] = useState("");
+
+  const [selectedTeam, setSelectedTeam] = useState("");
+  const [selectedUser, setSelectedUser] = useState(null);
+  const [inputPin, setInputPin] = useState("");
+
+  const [users, setUsers] = useState([]);
   const [error, setError] = useState("");
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const handleLogin = async (e) => {
-    e.preventDefault();
-    setError("");
-    setLoading(true);
+  // Check for saved Access Code on mount
+  useEffect(() => {
+    const savedCode = localStorage.getItem("cse_access_code");
+    if (savedCode === ORG_ACCESS_CODE) {
+      setStep(1); // Skip gatekeeper if recognized
+    }
+  }, []);
 
-    try {
-      // Ensure anonymous connection for DB access
-      if (!auth.currentUser) {
-        await signInAnonymously(auth);
-      }
+  // Fetch users only after passing the gatekeeper (Optimization + Security)
+  useEffect(() => {
+    if (step >= 1) {
+      const fetchUsers = async () => {
+        try {
+          if (!auth.currentUser) await signInAnonymously(auth);
 
-      const emailLower = email.toLowerCase().trim();
+          const q = query(collection(db, "staff_list"), orderBy("name"));
+          const snapshot = await getDocs(q);
 
-      // --- Admin Auto-Provisioning Logic ---
-      if (emailLower === ADMIN_EMAIL.toLowerCase()) {
-        const q = query(
-          collection(db, "staff_list"),
-          where("email", "==", emailLower)
-        );
-        const snapshot = await getDocs(q);
-
-        if (snapshot.empty) {
-          // First time Admin setup
-          if (password === "Welcome1") {
+          if (snapshot.empty) {
             const newAdmin = {
-              name: "Arnold Sim",
-              email: emailLower,
-              password: password,
+              name: ADMIN_NAME,
               role: "admin",
               team: "Others",
+              pin: "1234",
               createdAt: serverTimestamp(),
             };
             await addDoc(collection(db, "staff_list"), newAdmin);
-            onLogin({ ...newAdmin, id: "temp-admin-id" });
-            return;
+            setUsers([newAdmin]);
           } else {
-            setError("Admin account not found. Use default credentials.");
-            setLoading(false);
-            return;
+            setUsers(
+              snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }))
+            );
           }
+        } catch (err) {
+          console.error("Fetch Error", err);
+          setError("Could not load staff list. Check connection.");
+        } finally {
+          setLoading(false);
         }
-      }
+      };
+      fetchUsers();
+    } else {
+      setLoading(false);
+    }
+  }, [step]);
 
-      // --- Standard Staff Login ---
-      const q = query(
-        collection(db, "staff_list"),
-        where("email", "==", emailLower),
-        where("password", "==", password)
-      );
+  // Handle Organization Code Entry
+  const handleOrgCodeSubmit = (e) => {
+    e.preventDefault();
+    if (orgCodeInput.trim().toUpperCase() === ORG_ACCESS_CODE.toUpperCase()) {
+      localStorage.setItem("cse_access_code", ORG_ACCESS_CODE); // Save cookie
+      setStep(1);
+      setLoading(true); // Show loading while fetching users
+    } else {
+      setError("Invalid Organization Code.");
+    }
+  };
 
-      const snapshot = await getDocs(q);
+  const handleTeamSelect = (team) => {
+    setSelectedTeam(team);
+    setStep(2);
+    setError("");
+  };
 
-      if (!snapshot.empty) {
-        const userData = snapshot.docs[0].data();
-        onLogin({ ...userData, id: snapshot.docs[0].id });
-      } else {
-        setError("Invalid email or password.");
-      }
-    } catch (err) {
-      console.error("Login Error:", err);
-      // Friendly error message handling
-      if (err.code === "auth/api-key-not-valid.-please-pass-a-valid-api-key.") {
-        setError("Configuration Error: Invalid Firebase API Key.");
-      } else {
-        setError(`Login failed: ${err.message}`);
-      }
-    } finally {
+  const handleUserSelect = (user) => {
+    setSelectedUser(user);
+    setStep(3);
+    setError("");
+  };
+
+  const handlePinSubmit = (e) => {
+    e.preventDefault();
+    setLoading(true);
+    // Simple PIN check (In a real app with high security, verify against DB again)
+    if (selectedUser.pin === inputPin) {
+      onLogin(selectedUser);
+    } else {
+      setError("Incorrect PIN. Please try again.");
       setLoading(false);
     }
   };
+
+  const handleBack = () => {
+    if (step === 3) setStep(2);
+    else if (step === 2) setStep(1);
+    // We don't go back to step 0 usually, unless they clear cache
+    setError("");
+    setInputPin("");
+  };
+
+  const filteredUsers = users.filter((u) => u.team === selectedTeam);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-slate-100 p-4">
@@ -162,58 +191,176 @@ const Login = ({ onLogin }) => {
         {/* LEGO Strip */}
         <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-red-600 via-yellow-400 via-green-600 to-blue-600"></div>
 
-        <div className="flex justify-center mb-6 mt-4">
-          <div className="p-3 bg-red-100 rounded-full">
-            <Blocks className="w-8 h-8 text-red-600" />
+        <div className="text-center mb-6 mt-2">
+          <div className="inline-flex p-3 bg-red-100 rounded-full mb-3">
+            {step === 0 ? (
+              <Shield className="w-8 h-8 text-red-600" />
+            ) : (
+              <Blocks className="w-8 h-8 text-red-600" />
+            )}
           </div>
+          <h2 className="text-2xl font-bold text-slate-800">
+            Absence Reporting Tool
+          </h2>
+          <p className="text-slate-500 font-medium text-sm uppercase tracking-wide">
+            CSE Singapore
+          </p>
         </div>
-        <h2 className="text-2xl font-bold text-center text-slate-800 mb-2">
-          Absence Reporting Tool
-        </h2>
-        <p className="text-center text-slate-500 mb-6 font-medium text-sm uppercase tracking-wide">
-          CSE Singapore
-        </p>
 
         {error && (
-          <div className="bg-red-50 text-red-600 p-3 rounded mb-4 text-sm flex items-center">
+          <div className="bg-red-50 text-red-600 p-3 rounded mb-4 text-sm flex items-center justify-center">
             <AlertCircle className="w-4 h-4 mr-2" />
             {error}
           </div>
         )}
 
-        <form onSubmit={handleLogin} className="space-y-4">
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Email
-            </label>
-            <input
-              type="email"
-              required
-              className="w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-red-500 focus:outline-none"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-            />
+        {loading && step > 0 && (
+          <div className="text-center text-slate-500 py-4">
+            Loading Staff Directory...
           </div>
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1">
-              Password
-            </label>
-            <input
-              type="password"
-              required
-              className="w-full p-2 border border-slate-300 rounded focus:ring-2 focus:ring-red-500 focus:outline-none"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
+        )}
+
+        {!loading && (
+          <div className="space-y-4">
+            {/* STEP 0: GATEKEEPER */}
+            {step === 0 && (
+              <form
+                onSubmit={handleOrgCodeSubmit}
+                className="animate-in fade-in slide-in-from-bottom-4 duration-300"
+              >
+                <p className="text-center text-slate-600 mb-4 text-sm">
+                  Please enter the Organization Code to access the portal.
+                </p>
+                <div className="mb-4">
+                  <input
+                    type="text"
+                    autoFocus
+                    className="w-full p-3 text-center text-lg tracking-widest border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:outline-none uppercase placeholder:normal-case placeholder:tracking-normal"
+                    value={orgCodeInput}
+                    onChange={(e) => setOrgCodeInput(e.target.value)}
+                    placeholder="Enter Code"
+                  />
+                </div>
+                <button
+                  type="submit"
+                  className="w-full bg-slate-800 text-white py-3 rounded-lg hover:bg-slate-700 transition font-medium"
+                >
+                  Verify Access
+                </button>
+              </form>
+            )}
+
+            {/* STEP 1: SELECT TEAM */}
+            {step === 1 && (
+              <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                <p className="text-center text-slate-600 mb-4 font-medium">
+                  Select your Team
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  {TEAMS.map((team) => (
+                    <button
+                      key={team}
+                      onClick={() => handleTeamSelect(team)}
+                      className="p-3 text-sm font-medium border border-slate-200 rounded-lg hover:border-red-500 hover:bg-red-50 hover:text-red-700 transition text-slate-700"
+                    >
+                      {team}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* STEP 2: SELECT NAME */}
+            {step === 2 && (
+              <div className="animate-in fade-in slide-in-from-right-4 duration-300">
+                <p className="text-center text-slate-600 mb-4 font-medium">
+                  Select your Name
+                </p>
+                <div className="max-h-60 overflow-y-auto space-y-2 pr-1">
+                  {filteredUsers.length === 0 ? (
+                    <p className="text-center text-slate-400 text-sm italic">
+                      No staff found in this team.
+                    </p>
+                  ) : (
+                    filteredUsers.map((user) => (
+                      <button
+                        key={user.id}
+                        onClick={() => handleUserSelect(user)}
+                        className="w-full text-left p-3 text-sm font-medium border border-slate-200 rounded-lg hover:border-red-500 hover:bg-red-50 hover:text-red-700 transition flex items-center"
+                      >
+                        <User className="w-4 h-4 mr-3 text-slate-400" />
+                        {user.name}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* STEP 3: ENTER PIN */}
+            {step === 3 && (
+              <form
+                onSubmit={handlePinSubmit}
+                className="animate-in fade-in slide-in-from-right-4 duration-300"
+              >
+                <div className="text-center mb-6">
+                  <div className="w-16 h-16 bg-slate-100 rounded-full mx-auto flex items-center justify-center mb-2">
+                    <User className="w-8 h-8 text-slate-500" />
+                  </div>
+                  <h3 className="font-bold text-lg text-slate-800">
+                    {selectedUser.name}
+                  </h3>
+                  <p className="text-xs text-slate-500 uppercase">
+                    {selectedTeam}
+                  </p>
+                </div>
+
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-slate-700 mb-1 text-center">
+                    Enter Access PIN
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      maxLength={4}
+                      autoFocus
+                      required
+                      className="w-full p-3 text-center text-2xl tracking-widest border border-slate-300 rounded-lg focus:ring-2 focus:ring-red-500 focus:outline-none"
+                      value={inputPin}
+                      onChange={(e) =>
+                        setInputPin(e.target.value.replace(/[^0-9]/g, ""))
+                      }
+                      placeholder="••••"
+                    />
+                    <KeyRound className="absolute right-4 top-4 w-5 h-5 text-slate-300" />
+                  </div>
+                  {/* NOTE: Remove this default hint in final version if desired */}
+                  <p className="text-xs text-center text-slate-400 mt-2">
+                    Default PIN is 1234
+                  </p>
+                </div>
+
+                <button
+                  type="submit"
+                  className="w-full bg-red-600 text-white py-3 rounded-lg hover:bg-red-700 transition font-medium text-lg"
+                >
+                  Verify Identity
+                </button>
+              </form>
+            )}
+
+            {/* BACK BUTTON */}
+            {step > 1 && (
+              <button
+                onClick={handleBack}
+                className="w-full mt-4 text-sm text-slate-500 hover:text-slate-800 underline"
+              >
+                Go Back
+              </button>
+            )}
           </div>
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 transition font-medium disabled:opacity-50"
-          >
-            {loading ? "Verifying..." : "Log In"}
-          </button>
-        </form>
+        )}
       </div>
     </div>
   );
@@ -233,8 +380,8 @@ const AbsenceForm = ({ user }) => {
 
     try {
       await addDoc(collection(db, "absences"), {
-        userEmail: user.email,
-        userName: user.name || user.email,
+        userId: user.id, // Link by ID
+        userName: user.name,
         userTeam: user.team || "Others",
         type: leaveType,
         date: date,
@@ -248,9 +395,7 @@ const AbsenceForm = ({ user }) => {
       setTimeout(() => setSuccess(false), 3000);
     } catch (error) {
       console.error("Error reporting absence:", error);
-      alert(
-        "Failed to save report. Check your internet connection or database permissions."
-      );
+      alert("Failed to save report. Check connection.");
     } finally {
       setSubmitting(false);
     }
@@ -263,7 +408,8 @@ const AbsenceForm = ({ user }) => {
         <div>
           <h3 className="font-semibold text-yellow-900">Registration Portal</h3>
           <p className="text-sm text-yellow-800 mt-1">
-            Absences reported here are immediately visible to your Team Leader.
+            Reporting as <strong>{user.name}</strong>. This will be visible to
+            your Team Leader.
           </p>
         </div>
       </div>
@@ -343,31 +489,25 @@ const AbsenceForm = ({ user }) => {
 // 3. Team Dashboard
 const TeamDashboard = () => {
   const [absences, setAbsences] = useState([]);
-  const [dateFilter, setDateFilter] = useState("today"); // 'today' or 'all'
+  const [dateFilter, setDateFilter] = useState("today");
   const [teamFilter, setTeamFilter] = useState("All");
 
   useEffect(() => {
     const today = new Date().toLocaleDateString("en-CA");
-
-    // PRODUCTION: Root collection 'absences'
     const q = query(collection(db, "absences"));
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       let data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
 
-      // 1. Date Filter
       if (dateFilter === "today") {
         data = data.filter((item) => item.date === today);
       }
 
-      // 2. Team Filter
       if (teamFilter !== "All") {
         data = data.filter((item) => item.userTeam === teamFilter);
       }
 
-      // Sort
       data.sort((a, b) => new Date(b.date) - new Date(a.date));
-
       setAbsences(data);
     });
 
@@ -378,13 +518,11 @@ const TeamDashboard = () => {
     try {
       await setDoc(
         doc(db, "absences", id),
-        {
-          status: "Acknowledged",
-        },
+        { status: "Acknowledged" },
         { merge: true }
       );
     } catch (err) {
-      console.error("Error updating status:", err);
+      console.error("Error:", err);
     }
   };
 
@@ -395,9 +533,7 @@ const TeamDashboard = () => {
           <LayoutDashboard className="w-6 h-6 mr-2 text-red-600" />
           Team Overview
         </h2>
-
         <div className="flex flex-wrap gap-3">
-          {/* Team Selector */}
           <div className="relative">
             <select
               value={teamFilter}
@@ -415,8 +551,6 @@ const TeamDashboard = () => {
               <Filter className="w-3 h-3" />
             </div>
           </div>
-
-          {/* Date Filter */}
           <div className="flex bg-white rounded-lg shadow-sm border p-1">
             <button
               onClick={() => setDateFilter("today")}
@@ -442,16 +576,6 @@ const TeamDashboard = () => {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        <div className="bg-white p-4 rounded-lg shadow-sm border border-slate-200 border-l-4 border-l-red-500">
-          <p className="text-sm text-slate-500 mb-1">
-            {teamFilter === "All" ? "Total" : teamFilter} Absent{" "}
-            {dateFilter === "today" ? "Today" : "Total"}
-          </p>
-          <p className="text-3xl font-bold text-slate-800">{absences.length}</p>
-        </div>
-      </div>
-
       <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden">
         <div className="p-4 border-b border-slate-100 bg-slate-50">
           <h3 className="font-semibold text-slate-800">
@@ -470,10 +594,9 @@ const TeamDashboard = () => {
               <thead className="text-xs text-slate-500 uppercase bg-slate-50 border-b">
                 <tr>
                   <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">Staff Member</th>
+                  <th className="px-4 py-3">Staff</th>
                   <th className="px-4 py-3">Team</th>
                   <th className="px-4 py-3">Type</th>
-                  <th className="px-4 py-3">Reason</th>
                   <th className="px-4 py-3">Status</th>
                 </tr>
               </thead>
@@ -489,26 +612,19 @@ const TeamDashboard = () => {
                     <td className="px-4 py-3 text-slate-800 font-medium">
                       {item.userName}
                     </td>
-                    <td className="px-4 py-3 text-slate-600">
-                      <span className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-xs">
-                        {item.userTeam || "Others"}
-                      </span>
+                    <td className="px-4 py-3 text-slate-600 text-xs">
+                      {item.userTeam || "Others"}
                     </td>
                     <td className="px-4 py-3">
                       <span
                         className={`px-2 py-1 rounded-full text-xs font-medium ${
                           item.type === "Sick Leave"
                             ? "bg-red-100 text-red-700"
-                            : item.type === "Childcare Leave"
-                            ? "bg-purple-100 text-purple-700"
                             : "bg-blue-100 text-blue-700"
                         }`}
                       >
                         {item.type}
                       </span>
-                    </td>
-                    <td className="px-4 py-3 text-slate-500 max-w-xs truncate">
-                      {item.reason}
                     </td>
                     <td className="px-4 py-3">
                       {item.status === "Pending Review" || !item.status ? (
@@ -516,13 +632,11 @@ const TeamDashboard = () => {
                           onClick={() => handleAcknowledge(item.id)}
                           className="text-xs bg-slate-800 text-white px-3 py-1.5 rounded hover:bg-slate-700 transition flex items-center"
                         >
-                          <Check className="w-3 h-3 mr-1" />
-                          Acknowledge
+                          <Check className="w-3 h-3 mr-1" /> Acknowledge
                         </button>
                       ) : (
                         <span className="text-xs text-green-600 font-medium flex items-center">
-                          <CheckCircle className="w-3 h-3 mr-1" />
-                          {item.status}
+                          <CheckCircle className="w-3 h-3 mr-1" /> {item.status}
                         </span>
                       )}
                     </td>
@@ -537,23 +651,17 @@ const TeamDashboard = () => {
   );
 };
 
-// 4. Manage Users
+// 4. Manage Users (No Email, Name + PIN)
 const ManageUsers = () => {
   const [users, setUsers] = useState([]);
 
-  // Create Form State
   const [newName, setNewName] = useState("");
-  const [newEmail, setNewEmail] = useState("");
-  const [newPassword, setNewPassword] = useState("");
   const [newRole, setNewRole] = useState("staff");
   const [newTeam, setNewTeam] = useState(TEAMS[0]);
   const [createStatus, setCreateStatus] = useState("");
-
-  // Delete Confirmation State
   const [deleteId, setDeleteId] = useState(null);
 
   useEffect(() => {
-    // PRODUCTION: Root collection 'staff_list'
     const q = query(collection(db, "staff_list"), orderBy("name"));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       setUsers(snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() })));
@@ -567,17 +675,14 @@ const ManageUsers = () => {
     try {
       await addDoc(collection(db, "staff_list"), {
         name: newName,
-        email: newEmail.toLowerCase().trim(),
-        password: newPassword,
         role: newRole,
         team: newTeam,
+        pin: DEFAULT_PIN, // Default PIN
         createdAt: serverTimestamp(),
       });
-      setCreateStatus("User added successfully.");
+      setCreateStatus(`User added with PIN: ${DEFAULT_PIN}`);
       setNewName("");
-      setNewEmail("");
-      setNewPassword("");
-      setTimeout(() => setCreateStatus(""), 3000);
+      setTimeout(() => setCreateStatus(""), 5000);
     } catch (err) {
       setCreateStatus("Error: " + err.message);
     }
@@ -589,13 +694,11 @@ const ManageUsers = () => {
       setDeleteId(null);
     } catch (err) {
       console.error("Delete failed", err);
-      setCreateStatus("Error deleting user: " + err.message);
     }
   };
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-      {/* Create User Form */}
       <div className="lg:col-span-1">
         <div className="bg-white rounded-lg shadow-md p-6 border border-slate-200">
           <h3 className="text-lg font-semibold text-slate-800 mb-4 flex items-center">
@@ -617,7 +720,6 @@ const ManageUsers = () => {
                 <option value="admin">Admin</option>
               </select>
             </div>
-
             <div>
               <label className="text-xs font-semibold text-slate-500 uppercase">
                 Team
@@ -634,31 +736,22 @@ const ManageUsers = () => {
                 ))}
               </select>
             </div>
-
-            <input
-              type="text"
-              placeholder="Full Name"
-              value={newName}
-              onChange={(e) => setNewName(e.target.value)}
-              className="w-full p-2 border rounded"
-              required
-            />
-            <input
-              type="email"
-              placeholder="Email"
-              value={newEmail}
-              onChange={(e) => setNewEmail(e.target.value)}
-              className="w-full p-2 border rounded"
-              required
-            />
-            <input
-              type="text"
-              placeholder="Password"
-              value={newPassword}
-              onChange={(e) => setNewPassword(e.target.value)}
-              className="w-full p-2 border rounded"
-              required
-            />
+            <div>
+              <label className="text-xs font-semibold text-slate-500 uppercase">
+                Name
+              </label>
+              <input
+                type="text"
+                placeholder="Full Name"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                className="w-full p-2 border rounded"
+                required
+              />
+            </div>
+            <div className="bg-slate-100 p-3 rounded text-xs text-slate-600">
+              Default PIN will be set to: <strong>{DEFAULT_PIN}</strong>
+            </div>
             <button className="w-full bg-red-600 text-white py-2 rounded hover:bg-red-700 font-medium">
               Create User
             </button>
@@ -669,7 +762,6 @@ const ManageUsers = () => {
         </div>
       </div>
 
-      {/* User List */}
       <div className="lg:col-span-2">
         <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden">
           <div className="p-4 border-b border-slate-100 bg-slate-50 flex justify-between items-center">
@@ -683,9 +775,9 @@ const ManageUsers = () => {
               <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0">
                 <tr>
                   <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Role</th>
                   <th className="px-4 py-3">Team</th>
-                  <th className="px-4 py-3">Email</th>
+                  <th className="px-4 py-3">Role</th>
+                  <th className="px-4 py-3">PIN</th>
                   <th className="px-4 py-3 text-right">Action</th>
                 </tr>
               </thead>
@@ -698,25 +790,15 @@ const ManageUsers = () => {
                     <td className="px-4 py-3 font-medium text-slate-700">
                       {u.name}
                     </td>
-                    <td className="px-4 py-3">
-                      <span
-                        className={`px-2 py-1 rounded-full text-xs font-medium uppercase ${
-                          u.role === "admin"
-                            ? "bg-red-100 text-red-700"
-                            : u.role === "leader"
-                            ? "bg-blue-100 text-blue-700"
-                            : "bg-gray-100 text-gray-600"
-                        }`}
-                      >
-                        {u.role}
-                      </span>
-                    </td>
                     <td className="px-4 py-3 text-slate-500">
                       {u.team || "-"}
                     </td>
-                    <td className="px-4 py-3 text-slate-500">{u.email}</td>
+                    <td className="px-4 py-3 text-xs uppercase text-slate-500">
+                      {u.role}
+                    </td>
+                    <td className="px-4 py-3 font-mono text-slate-400">****</td>
                     <td className="px-4 py-3 text-right">
-                      {u.email !== ADMIN_EMAIL.toLowerCase() &&
+                      {u.name !== ADMIN_NAME &&
                         (deleteId === u.id ? (
                           <div className="flex items-center justify-end space-x-2">
                             <button
@@ -737,7 +819,6 @@ const ManageUsers = () => {
                           <button
                             onClick={() => setDeleteId(u.id)}
                             className="text-red-400 hover:text-red-600 p-1 transition"
-                            title="Delete User"
                           >
                             <Trash2 className="w-4 h-4" />
                           </button>
@@ -759,17 +840,13 @@ const MyHistory = ({ user }) => {
   const [history, setHistory] = useState([]);
 
   useEffect(() => {
-    const q = query(
-      collection(db, "absences"),
-      where("userEmail", "==", user.email)
-    );
-
+    // Filter by userId (Document ID) which is safer than name
+    const q = query(collection(db, "absences"), where("userId", "==", user.id));
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
       data.sort((a, b) => new Date(b.date) - new Date(a.date));
       setHistory(data);
     });
-
     return () => unsubscribe();
   }, [user]);
 
@@ -784,7 +861,6 @@ const MyHistory = ({ user }) => {
           {history.length} Records
         </span>
       </div>
-
       <div className="overflow-x-auto">
         {history.length === 0 ? (
           <div className="p-8 text-center text-slate-400">
@@ -814,9 +890,7 @@ const MyHistory = ({ user }) => {
                       className={`px-2 py-1 rounded-full text-xs font-medium ${
                         item.type === "Sick Leave"
                           ? "bg-red-100 text-red-700"
-                          : item.type === "Childcare Leave"
-                          ? "bg-purple-100 text-purple-700"
-                          : "bg-gray-100 text-gray-700"
+                          : "bg-blue-100 text-blue-700"
                       }`}
                     >
                       {item.type}
@@ -855,9 +929,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState("register");
 
-  // 1. Initialize Firebase Connection
   useEffect(() => {
-    // Auto-inject TailwindCSS for styling if missing (Standard for single-file demos)
+    // Auto-inject TailwindCSS
     if (!document.getElementById("tailwind-script")) {
       const script = document.createElement("script");
       script.id = "tailwind-script";
@@ -865,12 +938,11 @@ export default function App() {
       document.head.appendChild(script);
     }
 
-    // Basic auth check listener
     const initAuth = async () => {
       try {
         await signInAnonymously(auth);
       } catch (e) {
-        console.error("Firebase Connection Error:", e);
+        console.error("Auth Error:", e);
       }
     };
     initAuth();
@@ -897,7 +969,6 @@ export default function App() {
       <Login
         onLogin={(user) => {
           setAppUser(user);
-          // If leader or admin, default to their dashboard view for better daily workflow
           if (user.role === "admin" || user.role === "leader") {
             setView("team_dashboard");
           } else {
@@ -912,11 +983,8 @@ export default function App() {
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
-      {/* Header */}
       <header className="bg-white border-b-4 border-transparent relative shadow-sm">
-        {/* LEGO Strip Top Border */}
         <div className="absolute top-0 left-0 w-full h-1.5 bg-gradient-to-r from-red-600 via-yellow-400 via-green-600 to-blue-600"></div>
-
         <div className="max-w-6xl mx-auto px-4 py-4 flex justify-between items-center mt-1">
           <div className="flex items-center space-x-2">
             <div className="bg-red-600 p-1.5 rounded-sm">
@@ -926,7 +994,6 @@ export default function App() {
               Absence Reporting Tool
             </h1>
           </div>
-
           <div className="flex items-center space-x-4">
             <div className="hidden md:block text-right">
               <div className="flex items-center justify-end space-x-1.5">
@@ -942,9 +1009,7 @@ export default function App() {
                     : "Staff Member"}
                 </p>
               </div>
-              <p className="text-sm font-bold text-slate-800">
-                {appUser.name || appUser.email}
-              </p>
+              <p className="text-sm font-bold text-slate-800">{appUser.name}</p>
             </div>
             <button
               onClick={handleLogout}
@@ -957,10 +1022,8 @@ export default function App() {
         </div>
       </header>
 
-      {/* Navigation Tabs */}
       <div className="bg-white border-b border-slate-200 sticky top-0 z-10 shadow-sm">
         <div className="max-w-6xl mx-auto px-4 flex space-x-6 overflow-x-auto">
-          {/* 1. My Absence (Register) */}
           <button
             onClick={() => setView("register")}
             className={`py-4 text-sm font-bold border-b-4 transition whitespace-nowrap ${
@@ -971,8 +1034,6 @@ export default function App() {
           >
             My Absence
           </button>
-
-          {/* 2. Absence History (New Tab) */}
           <button
             onClick={() => setView("my_history")}
             className={`py-4 text-sm font-bold border-b-4 transition whitespace-nowrap ${
@@ -983,8 +1044,6 @@ export default function App() {
           >
             Absence History
           </button>
-
-          {/* 3. Team Dashboard (Leaders/Admins) */}
           {isLeader && (
             <button
               onClick={() => setView("team_dashboard")}
@@ -997,8 +1056,6 @@ export default function App() {
               Team Dashboard
             </button>
           )}
-
-          {/* 4. Manage Users (Admins) */}
           {isAdmin && (
             <button
               onClick={() => setView("users")}
@@ -1014,14 +1071,10 @@ export default function App() {
         </div>
       </div>
 
-      {/* Main Content */}
       <main className="max-w-6xl mx-auto p-4 md:p-6">
         {view === "register" && <AbsenceForm user={appUser} />}
-
         {view === "my_history" && <MyHistory user={appUser} />}
-
         {view === "team_dashboard" && isLeader && <TeamDashboard />}
-
         {view === "users" && isAdmin && <ManageUsers />}
       </main>
     </div>
